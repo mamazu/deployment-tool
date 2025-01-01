@@ -12,8 +12,16 @@ use ratatui::{
 };
 
 #[derive(Debug, Deserialize)]
+pub struct CurrentCommit {
+    commit_hash: String,
+    title: String,
+    author_name: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct Changelog {
-    current_version: u32,
+    next_version_number: u32,
+    commit: CurrentCommit,
     current_time: String,
     merge_requests: Vec<MergeRequest>,
 }
@@ -43,7 +51,7 @@ fn get_changelog_info(project_id: &str, token: &str) -> Changelog {
 fn main() -> Result<()> {
     color_eyre::install()?;
     let terminal = ratatui::init();
-    let token = std::env::var("GITHUB_TOKEN").expect("GITHUB_TOKEN not set");
+    let token = std::env::var("GITLAB_TOKEN").expect("GITLAB_TOKEN not set");
     let mut app = App::new(
         ["251", "65"]
             .par_iter()
@@ -63,15 +71,26 @@ pub enum SelectedBlock {
     Right,
 }
 
+pub struct DeploymentOption {
+    value: bool,
+    label: String,
+}
+
 pub struct Deployment {
-    send_mail: bool,
+    selected_options: Vec<DeploymentOption>,
+    current_option: usize,
     deployment_running: bool,
 }
 
 impl Deployment {
     pub fn new() -> Self {
         return Self {
-            send_mail: false,
+            selected_options: vec![
+                DeploymentOption{ value: false, label: "Send Release Mail".to_string() },
+                DeploymentOption{ value: true, label: "Sylius Deployment".to_string() },
+                DeploymentOption{ value: true, label: "Sulu Deployment".to_string() },
+            ],
+            current_option: 0,
             deployment_running: false,
         };
     }
@@ -132,8 +151,15 @@ fn run(mut terminal: DefaultTerminal, app: &mut App) -> Result<()> {
                             app.deployment.deployment_running = true;
                         }
                         KeyCode::Char(' ') => {}
+                        KeyCode::Up => {
+                            let options_count = app.deployment.selected_options.len();
+                            app.deployment.current_option = (app.deployment.current_option + options_count - 1) % options_count;
+                        }
+                        KeyCode::Down => {
+                            app.deployment.current_option = (app.deployment.current_option + 1) % app.deployment.selected_options.len();
+                        }
                         KeyCode::Tab => {
-                            app.deployment.send_mail = !app.deployment.send_mail;
+                            app.deployment.selected_options[app.deployment.current_option].value = !app.deployment.selected_options[app.deployment.current_option].value;
                         }
                         _ => {}
                     }
@@ -155,7 +181,7 @@ fn render(frame: &mut Frame, app: &mut App) {
 fn render_commit_overview(frame: &mut Frame, app: &mut App) {
     let outer_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Max(3), Constraint::Min(1)])
+        .constraints([Constraint::Max(5), Constraint::Min(1)])
         .split(frame.area());
     let sections = Layout::default()
         .direction(Direction::Horizontal)
@@ -194,16 +220,22 @@ fn render_deployment_view(frame: &mut Frame, app: &App) {
     .split(block.inner(frame.area()));
     frame.render_widget(block, frame.area());
 
-    let items = ["Send email"];
+    let mut items: Vec<String> = vec![];
     let mut settings_state = ListState::default();
     // Clear selection
-    settings_state.select(None);
-    if app.deployment.send_mail {
-        settings_state.select(Some(0));
+    for option in app.deployment.selected_options.iter() {
+        let label: String;
+        if option.value {
+            label = "[x] ".to_string()+&option.label;
+        } else {
+            label = "    ".to_owned()+&option.label;
+        }
+        items.push(label);
     }
     let settings_list = List::new(items)
-        .highlight_symbol("[x] ")
-        .repeat_highlight_symbol(true);
+        .highlight_style(Style::new().add_modifier(Modifier::BOLD))
+    ;
+    settings_state.select(Some(app.deployment.current_option));
     frame.render_stateful_widget(settings_list, layout[0], &mut settings_state);
 
     if app.deployment.deployment_running {
@@ -219,7 +251,7 @@ fn render_deployment_view(frame: &mut Frame, app: &App) {
     }
 
     let mut send_release_mail = "Send release mail ".to_string();
-    if !app.deployment.send_mail {
+    if !app.deployment.selected_options[0].value {
         send_release_mail += "[skipped]";
     }
     let items = [
@@ -228,9 +260,13 @@ fn render_deployment_view(frame: &mut Frame, app: &App) {
         "Starting Sylius Pipeline",
         "Starting Sulu Pipeline",
     ];
+    let mut deployment_style = Style::default();
+    if !app.deployment.deployment_running {
+        deployment_style = deployment_style.fg(Color::DarkGray);
+    }
     let mut state = ListState::default();
     let list = List::new(items)
-        .style(Style::default().fg(Color::DarkGray))
+        .style(deployment_style)
         .highlight_style(Style::new().add_modifier(Modifier::BOLD))
         .highlight_symbol("✅ ")
         .repeat_highlight_symbol(true);
@@ -242,11 +278,6 @@ fn render_commit_view<'a>(
     changelog: &Changelog,
     selected: bool,
 ) -> Paragraph<'a> {
-    let text = format!(
-        "Version {} ({})",
-        changelog.current_version, changelog.current_time,
-    )
-    .to_string();
     let block = Block::bordered().title(title).style(Style::default());
 
     let mut style = Style::default();
@@ -254,6 +285,12 @@ fn render_commit_view<'a>(
         style = style.fg(Color::Yellow);
     }
 
+    let text = format!(
+        "Version {} ({})\nCommit: {}({})\nAuthor: {}",
+        changelog.next_version_number, changelog.current_time,
+        changelog.commit.title, changelog.commit.commit_hash,
+        changelog.commit.author_name,
+    ).to_string();
     return Paragraph::new(Text::styled(text, style)).block(block);
 }
 
